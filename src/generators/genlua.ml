@@ -67,8 +67,10 @@ let get_exposed ctx path meta = try
 	with Not_found -> []
 
 let dot_path = Ast.s_type_path
+let underscore_path (p,s) = match p with [] -> s | _ -> String.concat "_" p ^ "_" ^ s
 
 let s_path ctx = dot_path
+let u_path ctx = underscore_path
 
 (* TODO: are all these kwds necessary for field quotes *and* id escapes? *)
 let kwds =
@@ -704,11 +706,9 @@ and gen_expr ?(local=true) ctx e = begin
 		spr ctx "_hx_empty()";
 		ctx.separator <- true
 	| TObjectDecl fields ->
-		spr ctx "_hx_o({__fields__={";
-		concat ctx "," (fun (f,e) -> print ctx "%s=" (anon_field f); spr ctx "true") fields;
-		spr ctx "},";
+		spr ctx "{";
 		concat ctx "," (fun (f,e) -> print ctx "%s=" (anon_field f); gen_value ctx e) fields;
-		spr ctx "})";
+		spr ctx "}";
 		ctx.separator <- true
 	| TFor (v,it,e) ->
 		let handle_break = handle_break ctx e in
@@ -1286,8 +1286,10 @@ let generate_package_create ctx (p,_) =
 			(match acc with
 			| [] -> print ctx "local %s = {}" p
 			| _ ->
-				let p = String.concat "." (List.rev acc) ^ (field p) in
-				print ctx "%s = {}" p
+				let f = String.concat "_" (List.rev acc) ^ (field p) in
+				print ctx "%s = {};" f;
+				let cache = String.concat "_" (List.rev acc) ^ ("_" ^ p) in
+				print ctx "local %s = %s;" cache f;
 			);
 			ctx.separator <- true;
 			newline ctx;
@@ -1509,8 +1511,10 @@ let generate_enum ctx e =
 	    newline ctx;
 	end;
 
-	if has_feature ctx "Type.resolveEnum" || has_feature ctx "lua.Boot.isEnum" then
+	if has_feature ctx "Type.resolveEnum" || has_feature ctx "lua.Boot.isEnum" then begin
 	    print ctx "%s = _hxClasses[\"%s\"];" p (dot_path e.e_path);
+	    print ctx "%s = %s" (u_path ctx e.e_path) p;
+	end;
 
 	newline ctx;
 	List.iter (fun n ->
@@ -1520,14 +1524,14 @@ let generate_enum ctx e =
 		| TFun (args,_) ->
 			let count = List.length args in
 			let sargs = String.concat "," (List.map (fun (n,_,_) -> ident n) args) in
-			print ctx "function(%s) local _x = _hx_tabArray({[0]=\"%s\",%d,%s,__enum__=%s}, %i);" sargs f.ef_name f.ef_index sargs p (count + 2);
+			print ctx "function(%s) local _x = _hx_enumEntry({[0]=\"%s\",%d,%s,__enum__=%s});" sargs f.ef_name f.ef_index sargs p;
 			if has_feature ctx "may_print_enum" then
 				(* TODO: better namespacing for _estr *)
 				spr ctx " _x.toString = _estr;";
 			spr ctx " return _x; end ";
 			ctx.separator <- true;
 		| _ ->
-			println ctx "_hx_tabArray({[0]=\"%s\",%d},2)" f.ef_name f.ef_index;
+			println ctx "_hx_enumEntry({[0]=\"%s\",%d})" f.ef_name f.ef_index;
 			if has_feature ctx "may_print_enum" then begin
 				println ctx "%s%s.toString = _estr" p (field f.ef_name);
 			end;
@@ -1621,6 +1625,8 @@ let generate_type_forward ctx = function
 		    generate_package_create ctx c.cl_path;
 		    let p = s_path ctx c.cl_path in
 		    print ctx "%s = _hx_empty() " p;
+		    let cache = u_path ctx c.cl_path in
+		    print ctx "%s = %s " cache p;
 		end
 	| TEnumDecl e when e.e_extern ->
 		()
@@ -1628,6 +1634,8 @@ let generate_type_forward ctx = function
 		generate_package_create ctx e.e_path;
 		let p = s_path ctx e.e_path in
 		print ctx "%s = _hx_empty() " p;
+		let cache = u_path ctx e.e_path in
+	    print ctx "%s = %s " cache p;
 	| TTypeDecl _ | TAbstractDecl _ -> ()
 
 let set_current_class ctx c =
@@ -1661,8 +1669,8 @@ let alloc_ctx com =
 		| TClassDecl ({ cl_extern = true } as c) when not (Meta.has Meta.LuaRequire c.cl_meta)
 			-> dot_path p
 		| TEnumDecl { e_extern = true }
-			-> dot_path p
-		| _ -> s_path ctx p);
+			-> underscore_path p
+		| _ -> u_path ctx p);
 	ctx
 
 let gen_single_expr ctx e expr =

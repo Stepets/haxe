@@ -47,7 +47,7 @@ class Array<T> {
 		return this.length == 0 ? null : this[this.length-- -1];
 	}
 	public function push(x : T) : Int {
-		this[this.length++] = x;
+		this[this.length] = x; // relaying on _hx_tabArray length auto-increment 
 		return this.length;
 	}
 	public function reverse() : Void {

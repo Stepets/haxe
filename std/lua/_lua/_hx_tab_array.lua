@@ -1,8 +1,6 @@
 local _hx_array_mt = {
   __newindex = function(t,k,v)
-    if type(k) == 'number' and k >= t.length then
-      t.length = k + 1
-    end
+    t.length = math.max(t.length, k + 1)
     rawset(t,k,v)
   end
 }
@@ -10,4 +8,8 @@ local _hx_array_mt = {
 local function _hx_tabArray(tab,length)
   tab.length = length
   return setmetatable(tab, _hx_array_mt)
+end
+
+local function _hx_enumEntry(tab)
+  return tab
 end
