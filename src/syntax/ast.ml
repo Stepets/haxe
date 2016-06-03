@@ -65,6 +65,7 @@ module Meta = struct
 		| Deprecated
 		| DirectlyUsed
 		| DynamicObject
+		| Eager
 		| Enum
 		| EnumConstructorParam
 		| Event
@@ -101,6 +102,7 @@ module Meta = struct
 		| ImplicitCast
 		| Include
 		| InitPackage
+		| InlineConstructorVariable
 		| Internal
 		| IsVar
 		| JavaCanonical
@@ -121,6 +123,7 @@ module Meta = struct
 		| NativeGen
 		| NativeGeneric
 		| NativeProperty
+		| NativeStaticExtension
 		| NoCompletion
 		| NoDebug
 		| NoDoc
@@ -184,6 +187,7 @@ module Meta = struct
 		| Unsafe
 		| Usage
 		| Used
+		| UserVariable
 		| Value
 		| Void
 		| Last

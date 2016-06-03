@@ -1033,6 +1033,7 @@ module Compile = struct
 					v,ex_bindings
 				with Not_found ->
 					let v = alloc_var "_hx_tmp" e1.etype e1.epos in
+					v.v_meta <- (Meta.Custom ":extractorVariable",[],v.v_pos) :: v.v_meta;
 					v,(v,e1.epos,e1) :: ex_bindings
 				in
 				let ev = mk (TLocal v) v.v_type e1.epos in
@@ -1411,7 +1412,7 @@ module Match = struct
 		end;
 		let e = try
 			let t_switch = infer_switch_type() in
-			(match tmono with Some t -> Type.unify t_switch t | _ -> ());
+			(match tmono with Some t -> unify ctx t_switch t p | _ -> ());
 			TexprConverter.to_texpr ctx t_switch match_debug with_type dt
 		with TexprConverter.Not_exhaustive ->
 			error "Unmatched patterns: _" p;

@@ -90,6 +90,7 @@ and tfunc = {
 and anon_status =
 	| Closed
 	| Opened
+	| Const
 	| Extend of t list
 	| Statics of tclass
 	| EnumStatics of tenum
@@ -1805,7 +1806,7 @@ let rec unify a b =
 			(match !(an.a_status) with
 			| Opened -> an.a_status := Closed;
 			| Statics _ | EnumStatics _ | AbstractStatics _ -> error []
-			| Closed | Extend _ -> ())
+			| Closed | Extend _ | Const -> ())
 		with
 			Unify_error l -> error (cannot_unify a b :: l))
 	| TAnon a1, TAnon a2 ->
@@ -1929,11 +1930,14 @@ and unify_anons a b a1 a2 =
 				| Opened ->
 					if not (link (ref None) a f2.cf_type) then error [];
 					a1.a_fields <- PMap.add n f2 a1.a_fields
+				| Const when Meta.has Meta.Optional f2.cf_meta ->
+					()
 				| _ ->
-					if not (Meta.has Meta.Optional f2.cf_meta) then
-						error [has_no_field a n];
+					error [has_no_field a n];
 		) a2.a_fields;
 		(match !(a1.a_status) with
+		| Const when not (PMap.is_empty a2.a_fields) ->
+			PMap.iter (fun n _ -> if not (PMap.mem n a2.a_fields) then error [has_extra_field a n]) a1.a_fields;
 		| Opened ->
 			a1.a_status := Closed
 		| _ -> ());
@@ -1942,7 +1946,7 @@ and unify_anons a b a1 a2 =
 		| EnumStatics e -> (match !(a1.a_status) with EnumStatics e2 when e == e2 -> () | _ -> error [])
 		| AbstractStatics a -> (match !(a1.a_status) with AbstractStatics a2 when a == a2 -> () | _ -> error [])
 		| Opened -> a2.a_status := Closed
-		| Extend _ | Closed -> ())
+		| Const | Extend _ | Closed -> ())
 	with
 		Unify_error l -> error (cannot_unify a b :: l))
 
@@ -2103,7 +2107,17 @@ module Abstract = struct
 	let rec get_underlying_type a pl =
 		let maybe_recurse t =
 			underlying_type_stack := (TAbstract(a,pl)) :: !underlying_type_stack;
-			let t = match follow t with
+			let rec loop t = match t with
+				| TMono r ->
+					(match !r with
+					| Some t -> loop t
+					| _ -> t)
+				| TLazy f ->
+					loop (!f())
+				| TType({t_path=([],"Null")} as tn,[t1]) ->
+					TType(tn,[loop t1])
+				| TType (t,tl) ->
+					loop (apply_params t.t_params tl t.t_type)
 				| TAbstract(a,tl) when not (Meta.has Meta.CoreType a.a_meta) ->
 					if List.exists (fast_eq t) !underlying_type_stack then begin
 						let pctx = print_context() in
@@ -2115,6 +2129,7 @@ module Abstract = struct
 				| _ ->
 					t
 			in
+			let t = loop t in
 			underlying_type_stack := List.tl !underlying_type_stack;
 			t
 		in
@@ -2574,6 +2589,115 @@ module Texpr = struct
 	let rec skip e = match e.eexpr with
 		| TParenthesis e1 | TMeta(_,e1) | TBlock [e1] | TCast(e1,None) -> skip e1
 		| _ -> e
+
+	let foldmap_list f acc el =
+		let rec loop acc el acc2 = (match el with
+			| [] -> acc,(List.rev acc2)
+			| e1 :: el ->
+				let acc,e1 = f acc e1 in
+				loop acc el (e1 :: acc2))
+		in loop acc el []
+
+	let foldmap_opt f acc eo = match eo with
+		| Some(e) -> let acc,e = f acc e in acc,Some(e)
+		| None    -> acc,eo
+
+	let foldmap_pairs f acc pairs =
+		let acc,pairs = List.fold_left
+			(fun (acc,el) (v,e) -> let acc,e = f acc e in (acc,(v,e) :: el))
+			(acc,[])
+			pairs
+		in acc,(List.rev pairs)
+
+	let foldmap f acc e =
+		begin match e.eexpr with
+		| TConst _
+		| TLocal _
+		| TBreak
+		| TContinue
+		| TTypeExpr _ ->
+			acc,e
+		| TArray (e1,e2) ->
+			let acc,e1 = f acc e1 in
+			let acc,e2 = f acc e2 in
+			acc,{ e with eexpr = TArray (e1, e2) }
+		| TBinop (op,e1,e2) ->
+			let acc,e1 = f acc e1 in
+			let acc,e2 = f acc e2 in
+			acc,{ e with eexpr = TBinop (op,e1,e2) }
+		| TFor (v,e1,e2) ->
+			let acc,e1 = f acc e1 in
+			let acc,e2 = f acc e2 in
+			acc,{ e with eexpr = TFor (v,e1,e2) }
+		| TWhile (e1,e2,flag) ->
+			let acc,e1 = f acc e1 in
+			let acc,e2 = f acc e2 in
+			acc,{ e with eexpr = TWhile (e1,e2,flag) }
+		| TThrow e1 ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TThrow (e1) }
+		| TEnumParameter (e1,ef,i) ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TEnumParameter(e1,ef,i) }
+		| TField (e1,v) ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TField (e1,v) }
+		| TParenthesis e1 ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TParenthesis (e1) }
+		| TUnop (op,pre,e1) ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TUnop (op,pre,e1) }
+		| TArrayDecl el ->
+			let acc,el = foldmap_list f acc el in
+			acc,{ e with eexpr = TArrayDecl el }
+		| TNew (t,pl,el) ->
+			let acc,el = foldmap_list f acc el in
+			acc,{ e with eexpr = TNew (t,pl,el) }
+		| TBlock el ->
+			let acc,el = foldmap_list f acc el in
+			acc,{ e with eexpr = TBlock (el) }
+		| TObjectDecl el ->
+			let acc,el = foldmap_pairs f acc el in
+			acc,{ e with eexpr = TObjectDecl el }
+		| TCall (e1,el) ->
+			let acc,e1 = f acc e1 in
+			let acc,el = foldmap_list f acc el in
+			acc,{ e with eexpr = TCall (e1,el) }
+		| TVar (v,eo) ->
+			let acc,eo = foldmap_opt f acc eo in
+			acc,{ e with eexpr = TVar (v, eo) }
+		| TFunction fu ->
+			let acc,e1 = f acc fu.tf_expr in
+			acc,{ e with eexpr = TFunction { fu with tf_expr = e1 } }
+		| TIf (ec,e1,eo) ->
+			let acc,ec = f acc ec in
+			let acc,e1 = f acc e1 in
+			let acc,eo = foldmap_opt f acc eo in
+			acc,{ e with eexpr = TIf (ec,e1,eo)}
+		| TSwitch (e1,cases,def) ->
+			let acc,e1 = f acc e1 in
+			let acc,cases = List.fold_left (fun (acc,cases) (el,e2) ->
+				let acc,el = foldmap_list f acc el in
+				let acc,e2 = f acc e2 in
+				acc,((el,e2) :: cases)
+			) (acc,[]) cases in
+			let acc,def = foldmap_opt f acc def in
+			acc,{ e with eexpr = TSwitch (e1, cases, def) }
+		| TTry (e1,catches) ->
+			let acc,e1 = f acc e1 in
+			let acc,catches = foldmap_pairs f acc catches in
+			acc,{ e with eexpr = TTry (e1, catches) }
+		| TReturn eo ->
+			let acc,eo = foldmap_opt f acc eo in
+			acc,{ e with eexpr = TReturn eo }
+		| TCast (e1,t) ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TCast (e1,t) }
+		| TMeta (m,e1) ->
+			let acc,e1 = f acc e1 in
+			acc,{ e with eexpr = TMeta(m,e1)}
+		end
 end
 
 module ExtType = struct
